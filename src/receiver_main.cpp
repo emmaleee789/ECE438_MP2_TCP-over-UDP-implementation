@@ -12,6 +12,7 @@
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <queue>
 // #include “sender_main.cpp”
 // #include "param.h"
 
@@ -22,6 +23,8 @@ using namespace std;
 struct sockaddr_in si_me, si_other;
 int sockfd, slen;
 int expectAckn, prevAckn;
+// extern int pks_RecvfromSender;
+// extern int pks_SendtoReceiver;
 
 struct TCPheader{
     int seqn = 0;
@@ -42,24 +45,25 @@ void diep(char *s) {
     exit(1);
 }
 
-// TCPheader* _receiver_fin_handler(TCPheader &packet){
-//     TCPheader ACKpacket;
-//     ACKpacket.FINACK = 1;
-//     ACKpacket.seqn = packet.seqn;
-//     return &ACKpacket;
-// }
+struct compare {
+    bool operator()(TCPheader a, TCPheader b) {
+        return  a.seqn > b.seqn; 
+    }
+};
+
+priority_queue<TCPheader, vector<TCPheader>, compare> pqueue;
 
 void _receiver_data_handler(TCPheader &packet, TCPheader &ACKpacket){
     ACKpacket.ACK = 1;
     ACKpacket.DATA = 0;
     ACKpacket.seqn = packet.seqn;
-    if (packet.seqn == expectAckn - 1){
+    if (packet.seqn == expectAckn - 1){ /* in-order packet */
         ACKpacket.ackn = expectAckn;
 
         prevAckn = expectAckn;
         expectAckn++;
 
-    } else if (packet.seqn > expectAckn - 1){//bug: not sure
+    } else if (packet.seqn > expectAckn - 1){ /* out-of-order packet */
         ACKpacket.ackn = prevAckn;
 
         expectAckn++;
@@ -87,23 +91,28 @@ void reliablyReceive(unsigned short int myUDPport, char* destinationFile) {
 
 
 	/* Now receive data and send acknowledgements */   
-    ofstream outfile;
+    // ofstream outfile;
     string s(destinationFile);
-    outfile.open(s, ios::binary);//, ios::binary
+    FILE* fp = fopen(destinationFile, "wb");
+    // outfile.open(s, ios::binary);//, ios::binary
 
     prevAckn = 1; // Ackn should start from 2 (Seqn starts from 1)
     expectAckn = 2;
+    // pks_RecvfromSender = 0;
 
     TCPheader packet;
     while(1){
+        // cout<<"Receiver: receiveing packets~~"<<endl;
         if (!recvfrom(sockfd, &packet, sizeof(packet), 0, (sockaddr*)&si_other, (socklen_t*)&slen)){
             diep("Receiver: failed to receive from the sender");
         }
+        // pks_RecvfromSender++;
         if (packet.FIN == 1 && packet.FINACK == 0 && packet.ACK == 0 && packet.DATA == 0){
             break;
         }
         else if (packet.FIN == 0 && packet.FINACK == 0 && packet.ACK == 0 && packet.DATA == 1){
-            outfile.write(packet.data, packet.size);//确定的 bug：不能直接是 MSS！要不 diff 会不一致
+            // outfile.write(packet.data, packet.size);//确定的 bug：不能直接是 MSS！要不 diff 会不一致
+            fwrite(packet.data, sizeof(char), packet.size, fp);
             TCPheader ACKpacket;
             _receiver_data_handler(packet, ACKpacket);
             if (!sendto(sockfd, &ACKpacket, sizeof(ACKpacket), 0, (sockaddr*)&si_other, (socklen_t)slen)){
@@ -111,7 +120,8 @@ void reliablyReceive(unsigned short int myUDPport, char* destinationFile) {
             }
         }
     }
-    outfile.close();
+    // outfile.close();
+    fclose(fp);
     close(sockfd);
 	printf("%s received.", destinationFile);
     return;

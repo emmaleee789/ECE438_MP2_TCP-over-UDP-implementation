@@ -48,8 +48,8 @@ struct TCPheader{
 // int prevAckn; //share with receiver side
 // int expectAckn; //share with receiver side
 
-void _prepare_socket(char* hostname, unsigned short int hostUDPport);
-void _set_timeout();
+inline void _prepare_socket(char* hostname, unsigned short int hostUDPport);
+inline void _set_timeout();
 void _client_send_pkt_err();
 void _send_packet();
 void _congestion_control();
@@ -83,10 +83,11 @@ int isNewAck = 0;
 int isDupAck = 0; 
 int isDupAck3 = 0; 
 int seqnCnt = 1; //  维护Client的序列号的 counter
-float cwnd, swnd, ssthresh; //only cwnd should be float??? bug
+float cwnd, ssthresh; //only cwnd should be float??? bug
 // int receiveAckNum = 0;
 int mode;
-
+// int pks_SendtoReceiver;
+// int pks_RecvfromSender;
 
 void diep(char *s) {
     perror(s);
@@ -100,7 +101,7 @@ void diep(char *s) {
 //     return rst;
 // }
 
-void _prepare_socket(char* hostname, unsigned short int hostUDPport){
+inline void _prepare_socket(char* hostname, unsigned short int hostUDPport){
     slen = sizeof (si_other);
 
     if ((sockfd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)) == -1)
@@ -148,7 +149,7 @@ void _prepare_socket(char* hostname, unsigned short int hostUDPport){
 
 }
 
-void _set_timeout(){
+inline void _set_timeout(){
     struct timeval RTOv;
     RTOv.tv_sec = 0;
     RTOv.tv_usec = 10000;
@@ -187,7 +188,8 @@ void _client_recv_pkt_err(){
 }
 
 void _send_packet(){
-    while(!trans_buf.empty() && cwnd >= swnd){
+    cout<<"Sender: sending packets~~"<<endl;
+    while(!trans_buf.empty()){// && cwnd >= wait_for_ack.size()){
         TCPheader packet = trans_buf.front();
 
         clock_t startTime = clock(); /* clock的精度为ms级 */
@@ -201,14 +203,14 @@ void _send_packet(){
         wait_for_ack.push(packet); /* for re-send and check ACKs purpose */
         trans_buf.pop();
 
-        /* update swnd */
-        swnd++;
+        // pks_SendtoReceiver++;
 
     }
     return;
 }
 
 void _send_fin(){
+    cout<<"Sender: begin to send FIN packet"<<endl;
     TCPheader FINpacket;
     FINpacket.FIN = 1;
     trans_buf.push(FINpacket);
@@ -244,12 +246,16 @@ void user_data_handler(char* filename, unsigned long long int bytesToTransfer){
         packetnum = 1;
         last_trans_bytes = bytesToTransfer;
     } else{
-        packetnum = ceil(bytesToTransfer/MSS);
+        packetnum = (bytesToTransfer + MSS - 1)/MSS;
         last_trans_bytes = bytesToTransfer%MSS;
         
     }
-
+    cout<<"Sender: packetnum: "<< packetnum<<endl;
+    cout<<"Sender: last_trans_bytes: "<<last_trans_bytes<<endl;
     for (int i=0; i<packetnum; i++){
+        // if (i > 4193){
+        //     cout<<"reach over 4195 packets!!"<<endl;
+        // }
         TCPheader packet;
         char tmp_data[MSS];
         int read_size = (i == packetnum - 1)? last_trans_bytes : MSS;
@@ -286,6 +292,7 @@ void _congestion_control(){
                 ssthresh = cwnd/2;
                 cwnd = ssthresh+3;
                 isDupAck3 = 0;//重置
+                mode = 3;
             }
             if (isTimeout){
                 ssthresh = cwnd/2;
@@ -306,11 +313,13 @@ void _congestion_control(){
                 ssthresh = cwnd/2;
                 cwnd = ssthresh+3;
                 isDupAck3 = 0;//重置
+                mode = 3;
             }
             if (isTimeout){
                 ssthresh = cwnd/2;
                 cwnd = 1;
                 isTimeout = 0;
+                mode = 1;
             }
             break;
         //拥塞发生状态
@@ -318,6 +327,7 @@ void _congestion_control(){
             if (isNewAck) {
                 cwnd = ssthresh;
                 isNewAck = 0;
+                mode = 2;
             }
             if (isDupAck) {
                 cwnd += 1;
@@ -331,6 +341,7 @@ void _congestion_control(){
                 ssthresh = cwnd/2;
                 cwnd = 1;
                 isTimeout = 0;
+                mode = 1;
             }
             break;
     }
@@ -340,20 +351,32 @@ void _congestion_control(){
 
 /* (Update RTT, Update CWND & RWND, Update FSM of Congestion Control, Handle Duplicated ACK) */
 void ack_handler(TCPheader &packet){
-    /* update waiting queue */
-    wait_for_ack.pop();//bug：wait_for_ack和收到的 packet 顺序可以（不）一致，所以（未必）对应
+    // /* update waiting queue */
+    // wait_for_ack.pop();//bug：wait_for_ack和收到的 packet 顺序可以（不）一致，所以（未必）对应
 
     /* update 2 maps */
     ackn_n_map[packet.ackn]++;
+    //Stale ACK
+    if (ackn_n_map[packet.ackn] == 1 && wait_for_ack.front().seqn >= packet.ackn){ //bug log: not sure
+        return;
+    }
+
     //isNewAck
-    if (ackn_n_map[packet.ackn] == 1){
+    else if (ackn_n_map[packet.ackn] == 1 && wait_for_ack.front().seqn < packet.ackn){
         vector<TCPheader> vec;
         ackn_pkt_map[packet.ackn] = vec; //第一个 ackn 对应的包是正确的，后来三个才是错误的
         isNewAck = 1;
         _congestion_control();
+
+        /* update wait_for_ack_queue */
+        int i=0;
+        while(!wait_for_ack.empty() && i < packet.ackn - wait_for_ack.front().seqn){
+            i++;
+            wait_for_ack.pop();
+        }
     }
     //isDupAck
-    else{ 
+    else if (ackn_n_map[packet.ackn] > 1 && wait_for_ack.front().seqn == packet.ackn){ 
         ackn_pkt_map[packet.ackn].push_back(packet);
     }
 
@@ -363,9 +386,16 @@ void ack_handler(TCPheader &packet){
         isDupAck3 = 1;
         _congestion_control();
         /* re-transmit missing segment */
-        packet.resend_flag = 1;
-        trans_buf.push(packet);
-        wait_for_ack.push(packet);
+        int i=0;
+        while (ackn_pkt_map[packet.ackn].size() != 0){
+            TCPheader resend_pkt = ackn_pkt_map[packet.ackn][i];
+            resend_pkt.resend_flag = 1;
+            resend_pkt.DATA = 1;
+            resend_pkt.ACK = 0;
+            resend_pkt.ackn = 0;
+            trans_buf.push(resend_pkt);
+            i++;
+        }
         _send_packet();
     }
 
@@ -390,6 +420,7 @@ void ack_handler(TCPheader &packet){
 
 /* Check Timeout, Resend Package, Update FSM of Congestion Control, Restart the clock */
 void timeout_handler(TCPheader &packet){
+    cout<<"Sender: timeout!"<<endl;
     isTimeout = 1;
     _congestion_control();
     
@@ -446,11 +477,13 @@ void reliablyTransfer(char* hostname, unsigned short int hostUDPport, char* file
 
     /* initialize args for congestion control */
     cwnd = 1;
-    swnd = 1;
-    ssthresh = 256;
+    ssthresh = 256;//bug: which ssthresh?
     mode = 1; /* 从慢启动算法开始 */
 
     isFirstPacket = 1;
+    // pks_SendtoReceiver = 0;
+
+    cout<<"Sender's bytesToTransfer: "<<bytesToTransfer<<endl;
 
 	/* Send data and receive acknowledgements on s*/
     user_data_handler(filename, bytesToTransfer);
@@ -490,6 +523,8 @@ void reliablyTransfer(char* hostname, unsigned short int hostUDPport, char* file
     //     //所以两个逻辑应该合并
     // }
 
+    /* hold until the receiver receive all packets */
+    // while(pks_RecvfromSender < pks_SendtoReceiver){}
     _send_fin();
 
 
@@ -514,10 +549,7 @@ int main(int argc, char** argv) {
     udpPort = (unsigned short int) atoi(argv[2]);
     numBytes = atoll(argv[4]);
 
-
-
     reliablyTransfer(argv[1], udpPort, argv[3], numBytes);
-
 
     return (EXIT_SUCCESS);
 }
