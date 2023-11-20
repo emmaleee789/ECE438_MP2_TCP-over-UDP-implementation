@@ -1,0 +1,51 @@
+Notes:
+
+1. TCP 是面向连接的传输层协议，传输数据前先要建⽴连接
+    UDP 是不需要连接，即刻传输数据。
+    //--> 三次握手、四次挥手
+2. TCP 是可靠交付数据的，数据可以⽆差错、不丢失、不重复、按需到达。 
+    UDP 是尽最⼤努⼒交付，不保证可靠交付数据。
+3. TCP 有重传机制+滑动窗口+流量控制+拥塞控制，保证数据传输的安全性。
+    UDP 则没有，即使⽹络⾮常拥堵了，也不会影响 UDP 的发送速率。
+    --> 重传机制+滑动窗口+流量控制+拥塞控制
+4. TCP 首部⻓度较长，会有一定的开销，⾸部在没有使用「选项」字段时是 20 个字节，如果使⽤了「选项」字段则会变长的。
+    UDP ⾸部只有 8 个字节，并且是固定不变的，开销较小。
+5. TCP 是流式传输，没有边界，但保证顺序和可靠。
+    UDP 是⼀个包⼀个包的发送，是有边界的，但可能会丢包和乱序。
+6. 分片不同
+
+--现有疑惑：-- 我没有考虑先发后至/后发先至！！
+-普遍问题：
+//1）我需要考虑阻塞/不阻塞的问题嘛？也就是说，我需要考虑 client 会发多个 packet 的情况吗？
+//2）addrinfo & sockaddr_in
+3）thread：https://blog.csdn.net/natureworld2010/article/details/108501774
+            https://blog.csdn.net/zhouqt/article/details/127526970
+4）不同的 recvfrom 的 arg
+5）setsockopt: https://linux.die.net/man/3/setsockopt
+6）重发有两种：1. timeout 2. 没有 timeout 但是没有收到ack（x）
+7）recvfrom 函数会阻塞吗？
+8）快速重传和快速恢复算法一般同时使⽤？？？？ack_handler & timeout_handler同时使用？？
+-重传机制：
+//2）超时重传机制——如何判断 RTT 来判断 RTO 呢？
+//3）快速重传机制——整个逻辑 & 确定 ACK 的个数的流程
+
+-拥塞控制：
+4）
+
+-流量控制：
+4）待定
+
+
+Sender
+Thread 1: User Data Handler 
+        (Make Package, Check Window Size, Send Data via UDP, Calculate RTT)
+Thread 2: ACK Handler 
+        (Update RTT, Update CWND & RWND, Update FSM of Congestion Control, Handle Duplicated ACK)
+Thread 3: Timeout Handler 
+        (Check Timeout, Resend Package, Update FSM of Congestion Control, Restart the clock)
+
+-为什么不考虑先发后至/后发先至：
+网络上可能会存在"后发先至"的情况,在这种场景下,收到消息的顺序是存在变数的.
+导致"后发先至"的原因:两个主机之间,路线有多条,数据报1和数据报2走的可能也是不同的路线,
+数据报1转发路径上的路由器和交换机和数据报2的就不同了,有的转发速率快,有的转发速率慢,
+那么此时,这两个数据报的到达顺序,就存在变数了,可能先发送的但是是后到的.
