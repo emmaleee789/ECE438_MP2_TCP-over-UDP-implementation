@@ -189,7 +189,7 @@ void _client_recv_pkt_err(){
 
 void _send_packet(){
     cout<<"Sender: sending packets~~"<<endl;
-    while(!trans_buf.empty()){// && cwnd >= wait_for_ack.size()){
+    while(!trans_buf.empty() && cwnd >= wait_for_ack.size()){
         TCPheader packet = trans_buf.front();
 
         clock_t startTime = clock(); /* clock的精度为ms级 */
