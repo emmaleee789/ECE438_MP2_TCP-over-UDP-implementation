@@ -13,7 +13,6 @@
 #include <iostream>
 #include <string>
 #include <queue>
-// #include “sender_main.cpp”
 // #include "param.h"
 
 using namespace std;
@@ -22,9 +21,7 @@ using namespace std;
 
 struct sockaddr_in si_me, si_other;
 int sockfd, slen;
-int expectAckn, prevAckn;
-// extern int pks_RecvfromSender;
-// extern int pks_SendtoReceiver;
+int expectAckn;// prevAckn, countAckn;
 
 struct TCPheader{
     int seqn = 0;
@@ -53,20 +50,35 @@ struct compare {
 
 priority_queue<TCPheader, vector<TCPheader>, compare> pqueue;
 
-void _receiver_data_handler(TCPheader &packet, TCPheader &ACKpacket){
+void _receiver_data_handler(TCPheader &packet, TCPheader &ACKpacket, FILE* fp){
+    // cout<<"Receiver: expect ACK "<<expectAckn<<endl;
     ACKpacket.ACK = 1;
     ACKpacket.DATA = 0;
     ACKpacket.seqn = packet.seqn;
-    if (packet.seqn == expectAckn - 1){ /* in-order packet */
+    if (packet.seqn == expectAckn){ /* in-order packet */
+        expectAckn++;
+
+        fwrite(packet.data, sizeof(char), packet.size, fp);
+
+        while(!pqueue.empty() && pqueue.top().seqn == expectAckn - 1){
+            TCPheader pkt = pqueue.top();
+            fwrite(pkt.data, sizeof(char), pkt.size, fp);
+            expectAckn++;
+            pqueue.pop();
+        }
+
         ACKpacket.ackn = expectAckn;
 
-        prevAckn = expectAckn;
-        expectAckn++;
+        cout<<"Receiver: expect ackn: "<<expectAckn<<endl;
+        cout<<"Receiver: receive right seqn: "<<packet.seqn<<endl;
+        cout<<"Receiver: send ackn: "<<ACKpacket.ackn<<endl<<endl;
 
-    } else if (packet.seqn > expectAckn - 1){ /* out-of-order packet */
-        ACKpacket.ackn = prevAckn;
-
-        expectAckn++;
+    } else if (packet.seqn > expectAckn){ /* out-of-order packet */
+        cout<<"Receiver: expect ackn: "<<expectAckn<<endl;
+        cout<<"Receiver: receive higher seqn: "<<packet.seqn<<endl<<endl;
+        ACKpacket.ackn = expectAckn;
+        
+        pqueue.push(packet);
 
     }
     return;
@@ -96,8 +108,9 @@ void reliablyReceive(unsigned short int myUDPport, char* destinationFile) {
     FILE* fp = fopen(destinationFile, "wb");
     // outfile.open(s, ios::binary);//, ios::binary
 
-    prevAckn = 1; // Ackn should start from 2 (Seqn starts from 1)
-    expectAckn = 2;
+    // prevAckn = 1; // Ackn should start from 2 (Seqn starts from 1)
+    expectAckn = 1;
+    // countAckn = 2;
     // pks_RecvfromSender = 0;
 
     TCPheader packet;
@@ -108,13 +121,17 @@ void reliablyReceive(unsigned short int myUDPport, char* destinationFile) {
         }
         // pks_RecvfromSender++;
         if (packet.FIN == 1 && packet.FINACK == 0 && packet.ACK == 0 && packet.DATA == 0){
+            TCPheader FINACKpacket;
+            FINACKpacket.FINACK = 1;
+            if (!sendto(sockfd, &FINACKpacket, sizeof(FINACKpacket), 0, (sockaddr*)&si_other, (socklen_t)slen)){
+                diep("Receiver: failed to send ACK to the sender");
+            }
             break;
         }
         else if (packet.FIN == 0 && packet.FINACK == 0 && packet.ACK == 0 && packet.DATA == 1){
             // outfile.write(packet.data, packet.size);//确定的 bug：不能直接是 MSS！要不 diff 会不一致
-            fwrite(packet.data, sizeof(char), packet.size, fp);
             TCPheader ACKpacket;
-            _receiver_data_handler(packet, ACKpacket);
+            _receiver_data_handler(packet, ACKpacket, fp);
             if (!sendto(sockfd, &ACKpacket, sizeof(ACKpacket), 0, (sockaddr*)&si_other, (socklen_t)slen)){
                 diep("Receiver: failed to send ACK to the sender");
             }

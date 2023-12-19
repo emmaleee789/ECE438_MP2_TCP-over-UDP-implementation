@@ -44,12 +44,7 @@ struct TCPheader{
     char data[MSS];
 };
 
-/* only used in receiver side */
-// int prevAckn; //share with receiver side
-// int expectAckn; //share with receiver side
 
-inline void _prepare_socket(char* hostname, unsigned short int hostUDPport);
-inline void _set_timeout();
 void _client_send_pkt_err();
 void _send_packet();
 void _congestion_control();
@@ -60,19 +55,18 @@ void user_data_handler(char* filename, unsigned long long int bytesToTransfer);
 void ack_handler(TCPheader &packet);
 void timeout_handler(TCPheader &packet);
 
-//---------------
 
 
 // struct addrinfo *p; // 将指向struct addrinfos 的链表中各个可用addrinfo
 struct sockaddr_in si_other;
 int sockfd, slen;
-// struct timeval tv;
 long SRTT, DevRTT, RTO, R2;
 
+queue<TCPheader> file_buf;
 queue<TCPheader> trans_buf;
 queue<TCPheader> wait_for_ack;
 unordered_map<int, int> ackn_n_map;
-unordered_map<int, vector<TCPheader>> ackn_pkt_map;
+// unordered_map<int, vector<TCPheader>> ackn_pkt_map;
 unordered_map<int, clock_t> seqn_startT_map;
 unordered_map<int, clock_t> seqn_endT_map;
 
@@ -84,94 +78,12 @@ int isDupAck = 0;
 int isDupAck3 = 0; 
 int seqnCnt = 1; //  维护Client的序列号的 counter
 float cwnd, ssthresh; //only cwnd should be float??? bug
-// int receiveAckNum = 0;
 int mode;
-// int pks_SendtoReceiver;
-// int pks_RecvfromSender;
+
 
 void diep(char *s) {
     perror(s);
     exit(1);
-}
-
-// long long int currentTime_ms(void){
-//     gettimeofday(&tv, NULL);
-//     long long int rst;
-//     rst = (long long int)tv.tv_sec * 1000 + ((long long int)tv.tv_usec) / 1000;
-//     return rst;
-// }
-
-inline void _prepare_socket(char* hostname, unsigned short int hostUDPport){
-    slen = sizeof (si_other);
-
-    if ((sockfd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)) == -1)
-        diep("socket");
-    cout<<"sender's sockfd: "<<sockfd<<endl;
-    memset((char *) &si_other, 0, sizeof (si_other));
-    si_other.sin_family = AF_INET;
-    si_other.sin_port = htons(hostUDPport);
-    if (inet_aton(hostname, &si_other.sin_addr) == 0) {
-        fprintf(stderr, "inet_aton() failed\n");
-        exit(1);
-    }
-
-    return;
-    
-    // int status;
-    // int fd;
-
-    // struct addrinfo hints;
-    // struct addrinfo *servinfo; // 将指向结果
-    // memset(&hints, 0, sizeof hints); // 确保 struct 为空
-    // hints.ai_family = AF_UNSPEC;  // 不用管是 IPv4 或 IPv6
-    // hints.ai_socktype = SOCK_DGRAM; // UDP sockets
-
-    // if ((status = getaddrinfo(hostname, (to_string(hostUDPport)).c_str(), &hints, &servinfo)) != 0) {
-    //     fprintf(stderr, "getaddrinfo error: %s\n", gai_strerror(status));
-    //     exit(1);
-    // }
-
-    // // loop through all the results and connect to the first we can
-	// for(p = servinfo; p != NULL; p = p->ai_next) {
-	// 	if ((fd = socket(p->ai_family, p->ai_socktype,p->ai_protocol)) == -1) {
-	// 		perror("client: socket");
-	// 		continue;
-	// 	}
-
-	// 	break;
-	// }
-
-	// if (p == NULL) {
-	// 	fprintf(stderr, "client: failed to connect\n");
-	// 	exit(1);
-	// }
-    
-
-}
-
-inline void _set_timeout(){
-    struct timeval RTOv;
-    RTOv.tv_sec = 0;
-    RTOv.tv_usec = 10000;
-    if (!setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &RTOv, sizeof(RTOv))){
-        fprintf(stderr, "client: failed to set timeout\n");
-        // WSAGetLastError();
-		exit(1);
-    }
-    
-    return;
-    
-    // TCPheader packet;
-    // string tmp = "Just for RTT~~";
-    // memcpy(packet.data, tmp.data(), sizeof(tmp)/sizeof(char));
-    // clock_t startTime = clock(); /* clock的精度为ms级 */
-    // if (!sendto(sockfd, &packet, sizeof(packet), 0, p->ai_addr, p->ai_addrlen)){
-    //     _client_send_pkt_err();
-    // }
-    // recvfrom(sockfd, )
-    // clock_t endTime = clock();
-    // isFirstPacket = 0;
-    // setsockopt(sockfd, SOL_SOCKET, )
 }
 
 
@@ -187,46 +99,74 @@ void _client_recv_pkt_err(){
     return;
 }
 
+void _send_to_wrapper(TCPheader packet){
+    if (!sendto(sockfd, &packet, sizeof(packet), 0, (struct sockaddr*)&si_other, sizeof(si_other))){
+        _client_send_pkt_err();
+    }
+    return;
+}
+
 void _send_packet(){
-    cout<<"Sender: sending packets~~"<<endl;
-    while(!trans_buf.empty() && cwnd >= wait_for_ack.size()){
+    cout<<endl;
+
+    if (file_buf.empty()){
+        return;
+    }
+
+    cout<<"file_buf size: "<<file_buf.size()<<endl;
+
+    // int pks_to_send = (cwnd - wait_for_ack.size() <= trans_buf.size())? cwnd - wait_for_ack.size() : trans_buf.size();
+    int cnt = file_buf.size();
+    while(cwnd >= wait_for_ack.size() && cnt > 0){
+        TCPheader tmp_pkt = file_buf.front();
+        cout<<"file content: "<<tmp_pkt.data<<endl;
+        trans_buf.push(tmp_pkt);
+        wait_for_ack.push(tmp_pkt); /* for re-send and check ACKs purpose */
+        file_buf.pop();
+        cnt--;
+    }
+
+    while (!trans_buf.empty()) { //bug: fix 
         TCPheader packet = trans_buf.front();
+        cout<<"trans_buf content: "<<packet.data<<endl;
 
         clock_t startTime = clock(); /* clock的精度为ms级 */
         seqn_startT_map[packet.seqn] = startTime;
 
-        if (!sendto(sockfd, &packet, sizeof(packet), 0, (struct sockaddr*)&si_other, sizeof(si_other))){
-            _client_send_pkt_err();
-        }
+        _send_to_wrapper(packet);
 
         /* 成功发送的 packet 即为等待 ack 的 packet */
-        wait_for_ack.push(packet); /* for re-send and check ACKs purpose */
         trans_buf.pop();
 
-        // pks_SendtoReceiver++;
+        cout<<"send packet #"<<packet.seqn<<endl;
+        cout<<"wait_for_ack.size(): "<<wait_for_ack.size()<<endl;
+        // cout<<"trans_buf.size(): "<<trans_buf.size()<<endl;
+        cout<<"cwnd: "<<cwnd<<endl;
 
     }
     return;
 }
 
 void _send_fin(){
-    cout<<"Sender: begin to send FIN packet"<<endl;
+    cout<<"begin to send FIN packet"<<endl;
     TCPheader FINpacket;
     FINpacket.FIN = 1;
-    trans_buf.push(FINpacket);
-    _send_packet();
+    _send_to_wrapper(FINpacket);
     TCPheader FINACKpacket;
     while(1){
         if (!recvfrom(sockfd, &FINACKpacket, sizeof(FINACKpacket), 0, (struct sockaddr *)&si_other, (socklen_t*)&slen)){
             if (errno != EAGAIN || errno != EWOULDBLOCK)
-                diep("Sender: failed to send FIN to receiver");
+                diep("failed to send FIN to receiver");
             else{
                 trans_buf.push(FINpacket);
-                _send_packet();
+                _send_to_wrapper(FINpacket);
             }
         }
         else{
-            break;
+            if (FINACKpacket.FINACK == 1){
+                cout<<"sender: received FINACK"<<endl;
+                break;
+            }
         }
     }
 
@@ -236,6 +176,7 @@ void _send_fin(){
 
 /*(Make Package, Check Window Size, Send Data via UDP, Calculate RTT)*/
 /* 发送端的所有事情 */
+//先把 file 里的内容全部填入 file_buf, 然后再一点一点从 file_buf中拿到 trans_buf
 void user_data_handler(char* filename, unsigned long long int bytesToTransfer){
     FILE *fp;
     fp = fopen(filename, "rb");
@@ -250,12 +191,9 @@ void user_data_handler(char* filename, unsigned long long int bytesToTransfer){
         last_trans_bytes = bytesToTransfer%MSS;
         
     }
-    cout<<"Sender: packetnum: "<< packetnum<<endl;
-    cout<<"Sender: last_trans_bytes: "<<last_trans_bytes<<endl;
+    cout<<"packetnum: "<< packetnum<<endl;
+    cout<<"last_trans_bytes: "<<last_trans_bytes<<endl;
     for (int i=0; i<packetnum; i++){
-        // if (i > 4193){
-        //     cout<<"reach over 4195 packets!!"<<endl;
-        // }
         TCPheader packet;
         char tmp_data[MSS];
         int read_size = (i == packetnum - 1)? last_trans_bytes : MSS;
@@ -269,12 +207,10 @@ void user_data_handler(char* filename, unsigned long long int bytesToTransfer){
         packet.seqn = seqnCnt;
         packet.size = read_size;
         seqnCnt++;
-        trans_buf.push(packet);
+        file_buf.push(packet);
     }
 
     fclose(fp);
-    
-    _send_packet();
 
     return;
 }
@@ -284,23 +220,24 @@ void _congestion_control(){
     switch (mode){
         case 1: //慢启动状态
             if (isNewAck) {
+                if (cwnd >= ssthresh){
+                    mode = 2;
+                    break;
+                }
                 cwnd = cwnd+1;
                 isNewAck = 0;
             }
-            if (isDupAck) isDupAck = 0;
-            if (isDupAck3){
-                ssthresh = cwnd/2;
+            else if (isDupAck) isDupAck = 0;
+            else if (isDupAck3){
+                ssthresh = (cwnd/2 > 1)? cwnd/2 : (float)1;
                 cwnd = ssthresh+3;
                 isDupAck3 = 0;//重置
                 mode = 3;
             }
-            if (isTimeout){
+            else if (isTimeout){
                 ssthresh = cwnd/2;
                 cwnd = 1;
                 isTimeout = 0;
-            }
-            if (cwnd >= ssthresh){
-                mode = 2;
             }
             break;
         case 2: //拥塞避免状态
@@ -308,14 +245,14 @@ void _congestion_control(){
                 cwnd = cwnd+1/cwnd;
                 isNewAck = 0;
             }
-            if (isDupAck) isDupAck = 0;
-            if (isDupAck3){
-                ssthresh = cwnd/2;
+            else if (isDupAck) isDupAck = 0;
+            else if (isDupAck3){
+                ssthresh = (cwnd/2 > 1)? cwnd/2 : (float)1;
                 cwnd = ssthresh+3;
                 isDupAck3 = 0;//重置
                 mode = 3;
             }
-            if (isTimeout){
+            else if (isTimeout){
                 ssthresh = cwnd/2;
                 cwnd = 1;
                 isTimeout = 0;
@@ -325,19 +262,19 @@ void _congestion_control(){
         //拥塞发生状态
         case 3: //快速重传
             if (isNewAck) {
-                cwnd = ssthresh;
+                cwnd = (ssthresh > 1)? ssthresh : (float)1;
                 isNewAck = 0;
                 mode = 2;
             }
-            if (isDupAck) {
+            else if (isDupAck) {
                 cwnd += 1;
                 isDupAck = 0;
             }
-            if (isDupAck3){
+            else if (isDupAck3){
                 isDupAck3 = 0;
                 break;//bug: ? not sure
             }
-            if (isTimeout){
+            else if (isTimeout){
                 ssthresh = cwnd/2;
                 cwnd = 1;
                 isTimeout = 0;
@@ -351,9 +288,10 @@ void _congestion_control(){
 
 /* (Update RTT, Update CWND & RWND, Update FSM of Congestion Control, Handle Duplicated ACK) */
 void ack_handler(TCPheader &packet){
-    // /* update waiting queue */
-    // wait_for_ack.pop();//bug：wait_for_ack和收到的 packet 顺序可以（不）一致，所以（未必）对应
-
+    cout<<endl;
+    cout<<"received packet #"<<packet.seqn<<endl;
+    cout<<"received packet.ackn: "<<packet.ackn<<endl;
+    cout<<"wait_for_ack.front().seqn: "<<wait_for_ack.front().seqn<<endl;
     /* update 2 maps */
     ackn_n_map[packet.ackn]++;
     //Stale ACK
@@ -363,40 +301,45 @@ void ack_handler(TCPheader &packet){
 
     //isNewAck
     else if (ackn_n_map[packet.ackn] == 1 && wait_for_ack.front().seqn < packet.ackn){
-        vector<TCPheader> vec;
-        ackn_pkt_map[packet.ackn] = vec; //第一个 ackn 对应的包是正确的，后来三个才是错误的
         isNewAck = 1;
         _congestion_control();
+        cout<<"mode: "<<mode<<endl;
+        cout<<"cwnd: "<<cwnd<<endl;
 
         /* update wait_for_ack_queue */
-        int i=0;
-        while(!wait_for_ack.empty() && i < packet.ackn - wait_for_ack.front().seqn){
-            i++;
+        while(!wait_for_ack.empty() && packet.ackn > wait_for_ack.front().seqn){
             wait_for_ack.pop();
         }
-    }
-    //isDupAck
-    else if (ackn_n_map[packet.ackn] > 1 && wait_for_ack.front().seqn == packet.ackn){ 
-        ackn_pkt_map[packet.ackn].push_back(packet);
-    }
 
-    /* Handle Duplicated ACK */
-    //isDupAck3
-    if (ackn_n_map[packet.ackn] - 1 == 3){ //除去第一个
-        isDupAck3 = 1;
-        _congestion_control();
-        /* re-transmit missing segment */
-        int i=0;
-        while (ackn_pkt_map[packet.ackn].size() != 0){
-            TCPheader resend_pkt = ackn_pkt_map[packet.ackn][i];
+        // if (mode == 1 || mode == 2) _send_packet(); //扩大窗口后继续发送
+        _send_packet();
+    }
+    else if (ackn_n_map[packet.ackn] > 1 && wait_for_ack.front().seqn == packet.ackn){ 
+        /* Handle Duplicated ACK */
+        //isDupAck3
+        if (ackn_n_map[packet.ackn] - 1 == 3){ //除去第一个
+            isDupAck3 = 1;
+            _congestion_control();
+            cout<<"mode: "<<mode<<endl;
+            cout<<"cwnd: "<<cwnd<<endl;
+            /* re-transmit missing segment */
+            TCPheader resend_pkt = wait_for_ack.front();
+            cout<<"prepared to re-send packet with seqn: "<<resend_pkt.seqn<<endl;
             resend_pkt.resend_flag = 1;
             resend_pkt.DATA = 1;
             resend_pkt.ACK = 0;
             resend_pkt.ackn = 0;
-            trans_buf.push(resend_pkt);
-            i++;
+            _send_to_wrapper(resend_pkt);
         }
-        _send_packet();
+        else{//isDupAck
+            isDupAck = 1;
+            _congestion_control();
+            cout<<"mode: "<<mode<<endl;
+            cout<<"cwnd: "<<cwnd<<endl;
+
+            // if (mode == 3) _send_packet(); //扩大窗口后继续发送
+
+        }
     }
 
     /* update RTT */
@@ -420,7 +363,7 @@ void ack_handler(TCPheader &packet){
 
 /* Check Timeout, Resend Package, Update FSM of Congestion Control, Restart the clock */
 void timeout_handler(TCPheader &packet){
-    cout<<"Sender: timeout!"<<endl;
+    cout<<"timeout!"<<endl;
     isTimeout = 1;
     _congestion_control();
     
@@ -460,7 +403,7 @@ void reliablyTransfer(char* hostname, unsigned short int hostUDPport, char* file
     /* Set timeout for the socket */
     timeval RTOv;
     RTOv.tv_sec = 0;
-    RTOv.tv_usec =  10000;//bug: 用 RTO 就停不下来了
+    RTOv.tv_usec =  1000;//bug: 用 RTO 就停不下来了
     if (setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &RTOv, sizeof(RTOv)) == -1){
         diep("setsockopt failed");
     }
@@ -488,9 +431,13 @@ void reliablyTransfer(char* hostname, unsigned short int hostUDPport, char* file
 	/* Send data and receive acknowledgements on s*/
     user_data_handler(filename, bytesToTransfer);
 
+    _send_packet();
+
     TCPheader packet;
-    while(!wait_for_ack.empty()){
+    while(!wait_for_ack.empty()){//因为这里处理不对，所以才有时候可以退出来，有时候才能退出来，有时候退不出来
         if (recvfrom(sockfd, &packet, sizeof(packet), 0, (struct sockaddr *)&si_other, (socklen_t*)&slen)){
+            // cout<<"receive packet #"<<packet.seqn<<endl;
+            // cout<<"wait_for_ack queue size: "<<wait_for_ack.size()<<endl;
             clock_t endTime = clock(); /* 精度>= 10ms */
             seqn_endT_map[packet.seqn] = endTime;
             
@@ -508,23 +455,6 @@ void reliablyTransfer(char* hostname, unsigned short int hostUDPport, char* file
 
     }
 
-    // while(1){
-    //     if (!recvfrom(sockfd, &packet, sizeof(packet), 0, p->ai_addr, &(p->ai_addrlen))){
-    //         if (errno != EAGAIN || errno != EWOULDBLOCK)
-    //             _client_recv_pkt_err();
-    //     }
-    //     if (packet.ACK == 1){
-    //         ack_handler(packet);
-    //     }
-    // }
-    // if (!wait_for_ack.empty()){
-    //     //重发
-    //     //所以就是重复 while(1)
-    //     //所以两个逻辑应该合并
-    // }
-
-    /* hold until the receiver receive all packets */
-    // while(pks_RecvfromSender < pks_SendtoReceiver){}
     _send_fin();
 
 
